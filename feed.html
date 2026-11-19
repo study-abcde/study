@@ -19,6 +19,7 @@ header{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;gap:6px;paddin
 .cap{padding:10px 14px 14px;display:flex;flex-direction:column;gap:2px}
 .cap b{font-size:15px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cap span{font-size:12px;opacity:.7}
+.cap span[data-only]{text-decoration:underline;cursor:pointer}
 .msg{padding:90px 20px;text-align:center;line-height:1.8;white-space:pre-wrap}
 dialog{margin:auto;border:1px solid #ffffff33;border-radius:14px;background:#1d1829;color:inherit;padding:18px;width:min(92vw,380px)}
 dialog::backdrop{background:#000a}
@@ -30,6 +31,20 @@ dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
 <body>
 <header id="bar"></header>
 <main id="feed"></main>
+<dialog id="qDlg">
+  <form method="dialog" id="qForm">
+    <label for="qVal">YouTubeを検索</label>
+    <input id="qVal" autocomplete="off" placeholder="例：あいす ライブ">
+    <div class="row"><button class="chip" value="cancel">閉じる</button><button class="chip" value="ok" aria-pressed="true">検索</button></div>
+  </form>
+</dialog>
+<dialog id="pickDlg">
+  <form method="dialog" id="pickForm">
+    <label for="pickSel">このアカウントだけ見る</label>
+    <select id="pickSel"></select>
+    <div class="row"><button class="chip" value="cancel">閉じる</button><button class="chip" value="ok" aria-pressed="true">表示</button></div>
+  </form>
+</dialog>
 <dialog id="dlg">
   <form method="dialog" id="addForm">
     <label for="addType">追加するもの</label>
@@ -78,7 +93,7 @@ const wr = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch
 
 let extra = Object.assign({yt:[],xa:[],xp:[],ig:[]}, rd('extra') || {});
 let key = CONFIG.API_KEY || rd('key') || '';
-const st = Object.assign({src:'all', shorts:false, order:'mix'}, rd('st') || {});
+const st = Object.assign({src:'all', shorts:false, order:'mix'}, rd('st') || {}, {only:'', q:'', onlyLabel:''});
 let items = [], active = -1;
 
 /* ---------- YouTube ---------- */
@@ -90,6 +105,7 @@ async function api(path, params) {
   return r.json();
 }
 async function uploadsId(h) {
+  if (h.startsWith('UC')) return 'UU' + h.slice(2);
   const c = rd('pl') || {};
   if (c[h]) return c[h];
   const j = await api('channels', {part:'contentDetails', forHandle:h});
@@ -98,12 +114,20 @@ async function uploadsId(h) {
   c[h] = id; wr('pl', c);
   return id;
 }
-async function ytItems(h) {
+async function ytItems(h, n) {
   let id = await uploadsId(h);
   if (st.shorts) id = 'UUSH' + id.slice(2);
-  const j = await api('playlistItems', {part:'snippet,contentDetails', playlistId:id, maxResults:CONFIG.PER_CHANNEL});
+  const j = await api('playlistItems', {part:'snippet,contentDetails', playlistId:id, maxResults:n || CONFIG.PER_CHANNEL});
   return (j.items || []).map(i => ({t:'yt', id:i.contentDetails.videoId, title:i.snippet.title,
-    ch:i.snippet.videoOwnerChannelTitle || h, date:i.contentDetails.videoPublishedAt || i.snippet.publishedAt || ''}));
+    h, ch:i.snippet.videoOwnerChannelTitle || h, date:i.contentDetails.videoPublishedAt || i.snippet.publishedAt || ''}));
+}
+
+const dec = t => { const e = document.createElement('textarea'); e.innerHTML = t; return e.value; };
+async function ytSearch(q) {
+  const p = {part:'snippet', type:'video', q, maxResults:50, videoEmbeddable:'true', regionCode:'JP', relevanceLanguage:'ja', order: st.order === 'new' ? 'date' : 'relevance'};
+  if (st.shorts) p.videoDuration = 'short';
+  const j = await api('search', p);
+  return (j.items || []).map(i => ({t:'yt', id:i.id.videoId, title:dec(i.snippet.title), h:i.snippet.channelId, ch:dec(i.snippet.channelTitle), date:i.snippet.publishedAt}));
 }
 
 /* ---------- 読み込みと並び替え ---------- */
@@ -111,24 +135,28 @@ const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.r
 
 async function load() {
   const feed = $('#feed'); feed.innerHTML = '<p class="msg">読み込み中…</p>';
-  const all = st.src === 'all', errs = []; items = [];
-  if (all || st.src === 'yt') {
+  const q = st.q, all = st.src === 'all', one = q ? '' : st.only, errs = []; items = [];
+  if (q || (one ? one.startsWith('yt:') : (all || st.src === 'yt'))) {
     if (!key) {
       feed.innerHTML = '<div class="msg"><p>YouTubeのAPIキーを貼り付けて、保存を押してください</p><br><input id="k1" autocomplete="off" placeholder="AIza..." style="width:100%;padding:10px;border-radius:8px;border:1px solid #ffffff55;background:#1d1829;color:inherit;font:inherit"><br><br><button class="chip" id="k2" aria-pressed="true">保存</button></div>';
       $('#k2').onclick = () => { const v = $('#k1').value.trim(); if (v) { key = v; wr('key', v); load(); } };
       return;
     }
-    const hs = [...new Set([...CONFIG.YT, ...extra.yt])];
-    const rs = await Promise.allSettled(hs.map(ytItems));
-    rs.forEach((r, i) => r.status === 'fulfilled' ? items.push(...r.value) : errs.push(hs[i] + '：' + r.reason.message));
+    if (q) { try { items = await ytSearch(q); } catch (e) { errs.push('検索：' + e.message); } }
+    else {
+      const hs = one ? [one.slice(3)] : [...new Set([...CONFIG.YT, ...extra.yt])];
+      const rs = await Promise.allSettled(hs.map(h => ytItems(h, one ? 50 : CONFIG.PER_CHANNEL)));
+      rs.forEach((r, i) => r.status === 'fulfilled' ? items.push(...r.value) : errs.push(hs[i] + '：' + r.reason.message));
+    }
     const seen = new Set(); items = items.filter(x => !seen.has(x.id) && seen.add(x.id));
   }
-  if (all || st.src === 'x') {
+  if (one && one.startsWith('x:')) items.push({t:'xa', h:one.slice(2)});
+  else if (!one && !q && (all || st.src === 'x')) {
     [...CONFIG.X_ACCOUNTS, ...extra.xa].forEach(h => items.push({t:'xa', h}));
     [...CONFIG.X_POSTS, ...extra.xp].forEach(u => items.push({t:'xp', u}));
   }
-  if (all || st.src === 'ig') [...CONFIG.IG_POSTS, ...extra.ig].forEach(u => items.push({t:'ig', u}));
-  if (st.order === 'new') items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  if (!one && !q && (all || st.src === 'ig')) [...CONFIG.IG_POSTS, ...extra.ig].forEach(u => items.push({t:'ig', u}));
+  if (one || st.order === 'new') items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   else shuffle(items);
   render();
   if (errs.length) toast('取得できなかった項目：' + errs.length + '件\n' + errs.slice(0, 3).join('\n'));
@@ -142,8 +170,8 @@ function render() {
   if (!items.length) { feed.innerHTML = '<p class="msg">表示できるものがありません。\n「＋追加」から追加するか、APIキーを確認してください。</p>'; return; }
   feed.innerHTML = items.map((it, i) => {
     let m, c;
-    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span>${esc(it.ch)}</span>`; }
-    else if (it.t === 'xa') { m = `<div class="media x"><div class="live"></div>@${esc(it.h)} のタイムラインを読み込み中</div>`; c = `<b>@${esc(it.h)}</b><span>X</span>`; }
+    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span data-only="yt:${esc(it.h)}" data-label="${esc(it.ch)}">${esc(it.ch)}（タップでこのチャンネルだけ）</span>`; }
+    else if (it.t === 'xa') { m = `<div class="media x"><div class="live"></div>@${esc(it.h)} のタイムラインを読み込み中</div>`; c = `<b>@${esc(it.h)}</b><span data-only="x:${esc(it.h)}" data-label="@${esc(it.h)}">X（タップでこのアカウントだけ）</span>`; }
     else if (it.t === 'xp') { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Xの投稿</b><span>X</span>`; }
     else { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Instagramの投稿</b><span>Instagram</span>`; }
     return `<section class="slide" data-i="${i}">${m}<div class="cap">${c}</div></section>`;
@@ -183,15 +211,21 @@ function bar() {
   const b = (label, on, fn, id) => `<button class="chip" aria-pressed="${on}" data-f="${fn}">${label}</button>`;
   $('#bar').innerHTML =
     ['all:すべて','yt:YouTube','x:X','ig:Instagram'].map(s => { const [k, l] = s.split(':'); return b(l, st.src === k, 'src-' + k); }).join('') +
-    b('ショートのみ', st.shorts, 'shorts') + b(st.order === 'mix' ? 'シャッフル' : '新しい順', false, 'order') +
+    b('ショートのみ', st.shorts, 'shorts') + b('シャッフル', st.order === 'mix', 'ord-mix') + b('新しい順', st.order === 'new', 'ord-new') +
+    (st.q ? b('✕ 検索：' + esc(st.q), true, 'clearq') : b('検索', false, 'search')) +
+    (st.only ? b('✕ ' + esc(st.onlyLabel || st.only) + ' だけ表示中', true, 'clear') : b('アカウント選択', false, 'pick')) +
     b('更新', false, 'reload') + b('＋追加', false, 'add');
 }
 $('#bar').addEventListener('click', e => {
   const f = e.target.dataset.f; if (!f) return;
   if (f.startsWith('src-')) st.src = f.slice(4);
   else if (f === 'shorts') st.shorts = !st.shorts;
-  else if (f === 'order') st.order = st.order === 'mix' ? 'new' : 'mix';
+  else if (f.startsWith('ord-')) st.order = f.slice(4);
+  else if (f === 'search') { $('#qDlg').showModal(); $('#qVal').focus(); return; }
+  else if (f === 'clearq') st.q = '';
   else if (f === 'add') { $('#dlg').showModal(); return; }
+  else if (f === 'pick') { openPick(); return; }
+  else if (f === 'clear') { st.only = ''; st.onlyLabel = ''; }
   wr('st', st); bar(); load();
 });
 $('#addForm').addEventListener('submit', e => {
@@ -204,6 +238,26 @@ $('#addForm').addEventListener('submit', e => {
     extra[type].push(v); wr('extra', extra);
   }
   $('#addVal').value = ''; $('#keyVal').value = ''; load();
+});
+
+function openPick() {
+  const yt = [...new Set([...CONFIG.YT, ...extra.yt])], xa = [...CONFIG.X_ACCOUNTS, ...extra.xa];
+  $('#pickSel').innerHTML = '<optgroup label="YouTube">' + yt.map(h => `<option value="yt:${esc(h)}">${esc(h)}</option>`).join('') + '</optgroup><optgroup label="X">' + xa.map(h => `<option value="x:${esc(h)}">@${esc(h)}</option>`).join('') + '</optgroup>';
+  $('#pickDlg').showModal();
+}
+$('#pickForm').addEventListener('submit', e => {
+  if (e.submitter?.value !== 'ok') return;
+  st.only = $('#pickSel').value; st.onlyLabel = $('#pickSel').selectedOptions[0].textContent; st.q = ''; wr('st', st); bar(); load();
+});
+$('#feed').addEventListener('click', e => {
+  const o = e.target.dataset?.only; if (!o) return;
+  st.only = o; st.onlyLabel = e.target.dataset.label || ''; st.q = ''; wr('st', st); bar(); load();
+});
+
+$('#qForm').addEventListener('submit', e => {
+  if (e.submitter?.value !== 'ok') return;
+  const v = $('#qVal').value.trim(); if (!v) return;
+  st.q = v; st.only = ''; st.onlyLabel = ''; $('#qVal').value = ''; wr('st', st); bar(); load();
 });
 
 bar(); load();
