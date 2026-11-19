@@ -20,6 +20,10 @@ header{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;gap:6px;paddin
 .cap b{font-size:15px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .cap span{font-size:12px;opacity:.7}
 .cap span[data-only]{text-decoration:underline;cursor:pointer}
+#cmDlg{max-height:80dvh;overflow-y:auto;width:min(94vw,440px)}
+.cmt{padding:10px 0;border-top:1px solid #ffffff22}.cmt b{font-size:13px}.cmt span{font-size:11px;opacity:.6;margin-left:8px}
+.rep{margin-left:14px;border-top-color:#ffffff14}
+.cmt p{font-size:14px;line-height:1.6;white-space:pre-wrap;margin-top:4px;overflow-wrap:anywhere}
 .msg{padding:90px 20px;text-align:center;line-height:1.8;white-space:pre-wrap}
 dialog{margin:auto;border:1px solid #ffffff33;border-radius:14px;background:#1d1829;color:inherit;padding:18px;width:min(92vw,380px)}
 dialog::backdrop{background:#000a}
@@ -31,6 +35,13 @@ dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
 <body>
 <header id="bar"></header>
 <main id="feed"></main>
+<dialog id="cmDlg">
+  <div class="row" style="justify-content:space-between;margin:0 0 10px;position:sticky;top:0">
+    <div><button class="chip" data-s="relevance" aria-pressed="true">人気順</button> <button class="chip" data-s="time" aria-pressed="false">新しい順</button></div>
+    <button class="chip" id="cmClose">閉じる</button>
+  </div>
+  <div id="cmList"></div>
+</dialog>
 <dialog id="qDlg">
   <form method="dialog" id="qForm">
     <label for="qVal">YouTubeを検索</label>
@@ -170,7 +181,7 @@ function render() {
   if (!items.length) { feed.innerHTML = '<p class="msg">表示できるものがありません。\n「＋追加」から追加するか、APIキーを確認してください。</p>'; return; }
   feed.innerHTML = items.map((it, i) => {
     let m, c;
-    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span data-only="yt:${esc(it.h)}" data-label="${esc(it.ch)}">${esc(it.ch)}（タップでこのチャンネルだけ）</span>`; }
+    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span data-only="yt:${esc(it.h)}" data-label="${esc(it.ch)}">${esc(it.ch)}（タップでこのチャンネルだけ）</span><button class="chip" data-cm="${esc(it.id)}" style="align-self:flex-start;margin-top:6px">コメントを見る</button>`; }
     else if (it.t === 'xa') { m = `<div class="media x"><div class="live"></div>@${esc(it.h)} のタイムラインを読み込み中</div>`; c = `<b>@${esc(it.h)}</b><span data-only="x:${esc(it.h)}" data-label="@${esc(it.h)}">X（タップでこのアカウントだけ）</span>`; }
     else if (it.t === 'xp') { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Xの投稿</b><span>X</span>`; }
     else { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Instagramの投稿</b><span>Instagram</span>`; }
@@ -250,10 +261,61 @@ $('#pickForm').addEventListener('submit', e => {
   st.only = $('#pickSel').value; st.onlyLabel = $('#pickSel').selectedOptions[0].textContent; st.q = ''; wr('st', st); bar(); load();
 });
 $('#feed').addEventListener('click', e => {
+  const cmId = e.target.dataset?.cm; if (cmId) { openComments(cmId); return; }
   const o = e.target.dataset?.only; if (!o) return;
   st.only = o; st.onlyLabel = e.target.dataset.label || ''; st.q = ''; wr('st', st); bar(); load();
 });
 
+const cm = {id:'', sort:'relevance', token:''};
+async function loadComments(more) {
+  const box = $('#cmList');
+  if (!more) { box.textContent = '読み込み中…'; cm.token = ''; }
+  try {
+    const j = await api('commentThreads', {part:'snippet', videoId:cm.id, maxResults:50, order:cm.sort, textFormat:'plainText', ...(cm.token ? {pageToken:cm.token} : {})});
+    if (!more) box.innerHTML = '';
+    box.querySelector('.more')?.remove();
+    (j.items || []).forEach(t => {
+      const c = t.snippet.topLevelComment.snippet, d = document.createElement('div'); d.className = 'cmt';
+      d.innerHTML = `<b>${esc(c.authorDisplayName)}</b><span>${esc((c.publishedAt || '').slice(0, 10))}　♥${c.likeCount || 0}　返信${t.snippet.totalReplyCount || 0}</span><p>${esc(c.textDisplay)}</p>${t.snippet.totalReplyCount ? `<button class="chip" data-rp="${esc(t.id)}" data-label="返信${t.snippet.totalReplyCount}件を見る" style="margin-top:6px">返信${t.snippet.totalReplyCount}件を見る</button><div class="rps"></div>` : ''}`;
+      box.append(d);
+    });
+    if (!box.children.length) box.textContent = 'コメントはありません';
+    cm.token = j.nextPageToken || '';
+    if (cm.token) { const b = document.createElement('button'); b.className = 'chip more'; b.textContent = 'もっと見る'; b.onclick = () => loadComments(true); box.append(b); }
+  } catch (e) { box.textContent = 'コメントを取得できませんでした：' + e.message; }
+}
+async function loadReplies(btn, token) {
+  const holder = btn.nextElementSibling;
+  btn.disabled = true;
+  try {
+    const j = await api('comments', {part:'snippet', parentId:btn.dataset.rp, maxResults:100, textFormat:'plainText', ...(token ? {pageToken:token} : {})});
+    holder.querySelector('.rmore')?.remove();
+    (j.items || []).forEach(x => {
+      const c = x.snippet, d = document.createElement('div'); d.className = 'cmt rep';
+      d.innerHTML = `<b>${esc(c.authorDisplayName)}</b><span>${esc((c.publishedAt || '').slice(0, 10))}　♥${c.likeCount || 0}</span><p>${esc(c.textDisplay)}</p>`;
+      holder.append(d);
+    });
+    if (j.nextPageToken) { const b = document.createElement('button'); b.className = 'chip rmore'; b.textContent = 'もっと見る'; b.onclick = () => loadReplies(btn, j.nextPageToken); holder.append(b); }
+    btn.dataset.loaded = '1'; btn.textContent = '返信を閉じる';
+  } catch (e) { holder.textContent = '返信を取得できませんでした：' + e.message; }
+  btn.disabled = false;
+}
+function toggleReplies(btn) {
+  if (!btn.dataset.loaded) { loadReplies(btn); return; }
+  const h = btn.nextElementSibling; h.hidden = !h.hidden;
+  btn.textContent = h.hidden ? btn.dataset.label : '返信を閉じる';
+}
+function openComments(id) {
+  cm.id = id; cm.sort = 'relevance';
+  document.querySelectorAll('#cmDlg [data-s]').forEach(b => b.setAttribute('aria-pressed', b.dataset.s === 'relevance'));
+  $('#cmDlg').showModal(); loadComments(false);
+}
+$('#cmDlg').addEventListener('click', e => {
+  if (e.target.dataset?.rp) { toggleReplies(e.target); return; }
+  const t = e.target.dataset?.s;
+  if (t) { cm.sort = t; document.querySelectorAll('#cmDlg [data-s]').forEach(b => b.setAttribute('aria-pressed', b.dataset.s === t)); loadComments(false); }
+  if (e.target.id === 'cmClose') $('#cmDlg').close();
+});
 $('#qForm').addEventListener('submit', e => {
   if (e.submitter?.value !== 'ok') return;
   const v = $('#qVal').value.trim(); if (!v) return;
