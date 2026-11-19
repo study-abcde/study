@@ -28,7 +28,7 @@ header{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;gap:6px;paddin
 dialog{margin:auto;border:1px solid #ffffff33;border-radius:14px;background:#1d1829;color:inherit;padding:18px;width:min(92vw,380px)}
 dialog::backdrop{background:#000a}
 dialog label{display:block;font-size:13px;margin:10px 0 4px}
-dialog input,dialog select{width:100%;padding:9px;border-radius:8px;border:1px solid #ffffff33;background:#120f1a;color:inherit;font:inherit}
+dialog input,dialog select,dialog textarea{font:inherit;width:100%;padding:9px;border-radius:8px;border:1px solid #ffffff33;background:#120f1a;color:inherit;font:inherit}
 dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
 </style>
 </head>
@@ -61,12 +61,11 @@ dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
     <label for="addType">追加するもの</label>
     <select id="addType">
       <option value="yt">YouTubeチャンネル（@ハンドル）</option>
-      <option value="xa">Xアカウント（@ID）</option>
       <option value="xp">Xの投稿URL</option>
       <option value="ig">Instagramの投稿URL</option>
     </select>
-    <label for="addVal">@ハンドル または URL</label>
-    <input id="addVal" autocomplete="off">
+    <label for="addVal">@ハンドル または URL（まとめて貼り付けOK）</label>
+    <textarea id="addVal" rows="4" autocomplete="off" placeholder="投稿のリンクは、改行で並べてまとめて貼り付けられます"></textarea>
     <label for="keyVal">YouTube APIキー（変更するときだけ）</label>
     <input id="keyVal" autocomplete="off">
     <div class="row"><button class="chip" value="cancel">閉じる</button><button class="chip" id="addBtn" value="ok" aria-pressed="true">追加</button></div>
@@ -87,11 +86,7 @@ const CONFIG = {
     "@ZeekstarTokyo","@2zicon","@KK-uy6zs","@DougaJidai","@LeagueH_handball","@inazuma0217tai1","@TigerFireee",
     "@Harukiyo","@buyuriru","@zagou-new","@Pols","@medansy","@Yuyuch7676","@Yuukun3798"
   ],
-  X_ACCOUNTS: [
-    "iLiFE_official","info_iLiVE","iLiFE_STAFF","iLiFE_riri","iLiFE_wakaba","ice_icol","iLiFE_fukumaru",
-    "iLiFE_mini","iLiFE_sumire","colne_icol","iLiFE_karen","iON_idol_","iMiN_official","iLiFE_mew",
-    "HEROINES_ABEMA","Haru_nonfic","iLiFE_koguma","heroines_idol","HEROINES_FES"
-  ],
+  X_ACCOUNTS: [],      // アカウントのタイムライン表示は不安定なので、今は使いません
   X_POSTS: [],          // 例: "https://x.com/iLiFE_official/status/1234567890"
   IG_POSTS: []          // 例: "https://www.instagram.com/p/XXXXXXXX/"
 };
@@ -193,7 +188,7 @@ function render() {
 }
 
 const scripts = {};
-const loadJs = src => scripts[src] || (scripts[src] = new Promise((ok, ng) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = ok; s.onerror = ng; document.head.append(s); }));
+const loadJs = src => scripts[src] || (scripts[src] = new Promise((ok, ng) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = ok; s.onerror = () => { delete scripts[src]; ng(new Error('load')); }; document.head.append(s); }));
 
 async function activate(i) {
   if (i === active) return;
@@ -207,14 +202,17 @@ async function activate(i) {
     } else if (it.t === 'xa' || it.t === 'xp') {
       await loadJs('https://platform.twitter.com/widgets.js');
       if (active !== i) return;
-      if (it.t === 'xa') await twttr.widgets.createTimeline({sourceType:'profile', screenName:it.h}, live, {theme:'dark', chrome:'noheader nofooter transparent', height:Math.round(live.clientHeight) || 560});
-      else { const id = (it.u.match(/status\/(\d+)/) || [])[1]; if (id) await twttr.widgets.createTweet(id, live, {theme:'dark', align:'center'}); }
+      if (it.t === 'xa') { if (!await twttr.widgets.createTimeline({sourceType:'profile', screenName:it.h}, live, {theme:'dark', chrome:'noheader nofooter transparent', height:Math.round(live.clientHeight) || 560})) throw 0; }
+      else { const id = (it.u.match(/status\/(\d+)/) || [])[1]; if (!id || !await twttr.widgets.createTweet(id, live, {theme:'dark', align:'center'})) throw 0; }
     } else {
       live.innerHTML = `<blockquote class="instagram-media" data-instgrm-permalink="${esc(it.u)}" data-instgrm-version="14" style="width:100%;margin:0"></blockquote>`;
       await loadJs('https://www.instagram.com/embed.js');
       window.instgrm && instgrm.Embeds.process(live);
     }
-  } catch (e) { live.innerHTML = '<p class="msg">読み込めませんでした</p>'; }
+  } catch (e) {
+    const u = it.t === 'xa' ? 'https://x.com/' + encodeURIComponent(it.h) : (it.t === 'xp' && /^https?:/.test(it.u) ? it.u : '');
+    live.innerHTML = '<p class="msg">読み込めませんでした' + (u ? '<br><br><a href="' + esc(u) + '" target="_blank" rel="noopener" style="color:#ff6fae">Xで開く</a>' : '') + '</p>';
+  }
 }
 
 /* ---------- 操作バー ---------- */
@@ -244,9 +242,11 @@ $('#addForm').addEventListener('submit', e => {
   const type = $('#addType').value; let v = $('#addVal').value.trim(); const k = $('#keyVal').value.trim();
   if (k) { key = k; wr('key', k); }
   if (v) {
-    if (type === 'yt' && !v.startsWith('@')) v = '@' + v;
-    if (type === 'xa') v = v.replace(/^@/, '');
-    extra[type].push(v); wr('extra', extra);
+    let vs = (type === 'xp' || type === 'ig') ? v.split(/\s+/).filter(x => /^https?:\/\//.test(x)).map(x => x.split('?')[0]) : [v];
+    if (type === 'xp') vs = vs.filter(x => /status\/\d+/.test(x));
+    if (type === 'yt') vs = vs.map(x => x.startsWith('@') ? x : '@' + x);
+    vs.forEach(x => { if (!extra[type].includes(x)) extra[type].push(x); });
+    wr('extra', extra);
   }
   $('#addVal').value = ''; $('#keyVal').value = ''; load();
 });
