@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>推しフィード</title>
+<style>
+*{box-sizing:border-box;margin:0}
+html,body{height:100%;background:#120f1a;color:#f4f0fa;font-family:"Hiragino Kaku Gothic ProN","Noto Sans JP",system-ui,sans-serif}
+header{position:fixed;top:0;left:0;right:0;z-index:5;display:flex;gap:6px;padding:calc(8px + env(safe-area-inset-top)) 10px 10px;overflow-x:auto;background:linear-gradient(#120f1aee,#120f1a00)}
+.chip{flex:none;border:1px solid #ffffff33;background:#ffffff14;color:inherit;border-radius:99px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+.chip[aria-pressed=true]{background:#ff6fae;border-color:#ff6fae;color:#1a0b14}
+#feed{height:100dvh;overflow-y:auto;scroll-snap-type:y mandatory;overscroll-behavior:contain}
+.slide{height:100dvh;scroll-snap-align:start;scroll-snap-stop:always;display:flex;flex-direction:column;max-width:480px;margin:0 auto;padding:calc(54px + env(safe-area-inset-top)) 0 env(safe-area-inset-bottom)}
+.media{position:relative;flex:1;min-height:0;margin:0 8px;border-radius:14px;overflow:hidden;background:#000 center/cover no-repeat}
+.media.x{background:linear-gradient(160deg,#2a1d3d,#14202f);display:grid;place-items:center;color:#ffffffaa;font-size:14px}
+.live{position:absolute;inset:0;overflow-y:auto}
+.live iframe{width:100%;height:100%;border:0}
+.cap{padding:10px 14px 14px;display:flex;flex-direction:column;gap:2px}
+.cap b{font-size:15px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.cap span{font-size:12px;opacity:.7}
+.msg{padding:90px 20px;text-align:center;line-height:1.8;white-space:pre-wrap}
+dialog{margin:auto;border:1px solid #ffffff33;border-radius:14px;background:#1d1829;color:inherit;padding:18px;width:min(92vw,380px)}
+dialog::backdrop{background:#000a}
+dialog label{display:block;font-size:13px;margin:10px 0 4px}
+dialog input,dialog select{width:100%;padding:9px;border-radius:8px;border:1px solid #ffffff33;background:#120f1a;color:inherit;font:inherit}
+dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
+</style>
+</head>
+<body>
+<header id="bar"></header>
+<main id="feed"></main>
+<dialog id="dlg">
+  <form method="dialog" id="addForm">
+    <label for="addType">追加するもの</label>
+    <select id="addType">
+      <option value="yt">YouTubeチャンネル（@ハンドル）</option>
+      <option value="xa">Xアカウント（@ID）</option>
+      <option value="xp">Xの投稿URL</option>
+      <option value="ig">Instagramの投稿URL</option>
+    </select>
+    <label for="addVal">@ハンドル または URL</label>
+    <input id="addVal" autocomplete="off">
+    <label for="keyVal">YouTube APIキー（変更するときだけ）</label>
+    <input id="keyVal" autocomplete="off">
+    <div class="row"><button class="chip" value="cancel">閉じる</button><button class="chip" id="addBtn" value="ok" aria-pressed="true">追加</button></div>
+  </form>
+</dialog>
+
+<script>
+/* ===== 設定：ここに足せば増えます（画面の「＋追加」からも追加できます） ===== */
+const CONFIG = {
+  API_KEY: "",          // YouTube Data API v3 のキー。空なら起動時に入力を求めます
+  PER_CHANNEL: 5,       // 1チャンネルあたり取る新着の本数
+  YT: [
+    "@iLiFE_official","@あいらいふ","@ice-iLiFE","@りりたんちゃんねる","@ilife-_-otaku","@BabyiLiFE",
+    "@iON-HEROINES","@iMiN-HEROINES","@heroinesofficial","@imin_fan","@福本カレン","@megafon_idol","@icecolne",
+    "@ULmelon","@chan_maru7","@B_Fullest","@sugaisan","@RIDDLER_nazo","@daidophenixtokai","@toyodagosei-bluefalcon",
+    "@tomikyowakoku","@JPNhandball","@TomiVideo","@100yengoraku","@deisuigames","@しゃけごはん-i8i",
+    "@tsukubahandball1989","@QuizKnock","@oi_ken","@klassekawachan","@bykn","@_taiyaki_4646","@keikich",
+    "@ZeekstarTokyo","@2zicon","@KK-uy6zs","@DougaJidai","@LeagueH_handball","@inazuma0217tai1","@TigerFireee",
+    "@Harukiyo","@buyuriru","@zagou-new","@Pols","@medansy","@Yuyuch7676","@Yuukun3798"
+  ],
+  X_ACCOUNTS: [
+    "iLiFE_official","info_iLiVE","iLiFE_STAFF","iLiFE_riri","iLiFE_wakaba","ice_icol","iLiFE_fukumaru",
+    "iLiFE_mini","iLiFE_sumire","colne_icol","iLiFE_karen","iON_idol_","iMiN_official","iLiFE_mew",
+    "HEROINES_ABEMA","Haru_nonfic","iLiFE_koguma","heroines_idol","HEROINES_FES"
+  ],
+  X_POSTS: [],          // 例: "https://x.com/iLiFE_official/status/1234567890"
+  IG_POSTS: []          // 例: "https://www.instagram.com/p/XXXXXXXX/"
+};
+/* ======================================================================= */
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const rd = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
+const wr = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+let extra = Object.assign({yt:[],xa:[],xp:[],ig:[]}, rd('extra') || {});
+let key = CONFIG.API_KEY || rd('key') || '';
+const st = Object.assign({src:'all', shorts:false, order:'mix'}, rd('st') || {});
+let items = [], active = -1;
+
+/* ---------- YouTube ---------- */
+async function api(path, params) {
+  const u = new URL('https://www.googleapis.com/youtube/v3/' + path);
+  u.search = new URLSearchParams({...params, key});
+  const r = await fetch(u);
+  if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(j.error?.message || r.status); }
+  return r.json();
+}
+async function uploadsId(h) {
+  const c = rd('pl') || {};
+  if (c[h]) return c[h];
+  const j = await api('channels', {part:'contentDetails', forHandle:h});
+  const id = j.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  if (!id) throw new Error('見つかりません');
+  c[h] = id; wr('pl', c);
+  return id;
+}
+async function ytItems(h) {
+  let id = await uploadsId(h);
+  if (st.shorts) id = 'UUSH' + id.slice(2);
+  const j = await api('playlistItems', {part:'snippet,contentDetails', playlistId:id, maxResults:CONFIG.PER_CHANNEL});
+  return (j.items || []).map(i => ({t:'yt', id:i.contentDetails.videoId, title:i.snippet.title,
+    ch:i.snippet.videoOwnerChannelTitle || h, date:i.contentDetails.videoPublishedAt || i.snippet.publishedAt || ''}));
+}
+
+/* ---------- 読み込みと並び替え ---------- */
+const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
+
+async function load() {
+  const feed = $('#feed'); feed.innerHTML = '<p class="msg">読み込み中…</p>';
+  const all = st.src === 'all', errs = []; items = [];
+  if (all || st.src === 'yt') {
+    if (!key) {
+      feed.innerHTML = '<div class="msg"><p>YouTubeのAPIキーを貼り付けて、保存を押してください</p><br><input id="k1" autocomplete="off" placeholder="AIza..." style="width:100%;padding:10px;border-radius:8px;border:1px solid #ffffff55;background:#1d1829;color:inherit;font:inherit"><br><br><button class="chip" id="k2" aria-pressed="true">保存</button></div>';
+      $('#k2').onclick = () => { const v = $('#k1').value.trim(); if (v) { key = v; wr('key', v); load(); } };
+      return;
+    }
+    const hs = [...new Set([...CONFIG.YT, ...extra.yt])];
+    const rs = await Promise.allSettled(hs.map(ytItems));
+    rs.forEach((r, i) => r.status === 'fulfilled' ? items.push(...r.value) : errs.push(hs[i] + '：' + r.reason.message));
+    const seen = new Set(); items = items.filter(x => !seen.has(x.id) && seen.add(x.id));
+  }
+  if (all || st.src === 'x') {
+    [...CONFIG.X_ACCOUNTS, ...extra.xa].forEach(h => items.push({t:'xa', h}));
+    [...CONFIG.X_POSTS, ...extra.xp].forEach(u => items.push({t:'xp', u}));
+  }
+  if (all || st.src === 'ig') [...CONFIG.IG_POSTS, ...extra.ig].forEach(u => items.push({t:'ig', u}));
+  if (st.order === 'new') items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  else shuffle(items);
+  render();
+  if (errs.length) toast('取得できなかった項目：' + errs.length + '件\n' + errs.slice(0, 3).join('\n'));
+}
+
+function toast(t) { const p = document.createElement('p'); p.className = 'msg'; p.textContent = t; $('#feed').append(p); }
+
+/* ---------- 表示 ---------- */
+function render() {
+  const feed = $('#feed');
+  if (!items.length) { feed.innerHTML = '<p class="msg">表示できるものがありません。\n「＋追加」から追加するか、APIキーを確認してください。</p>'; return; }
+  feed.innerHTML = items.map((it, i) => {
+    let m, c;
+    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span>${esc(it.ch)}</span>`; }
+    else if (it.t === 'xa') { m = `<div class="media x"><div class="live"></div>@${esc(it.h)} のタイムラインを読み込み中</div>`; c = `<b>@${esc(it.h)}</b><span>X</span>`; }
+    else if (it.t === 'xp') { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Xの投稿</b><span>X</span>`; }
+    else { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Instagramの投稿</b><span>Instagram</span>`; }
+    return `<section class="slide" data-i="${i}">${m}<div class="cap">${c}</div></section>`;
+  }).join('');
+  active = -1;
+  const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) activate(+e.target.dataset.i); }), {root:feed, threshold:.6});
+  feed.querySelectorAll('.slide').forEach(s => io.observe(s));
+}
+
+const scripts = {};
+const loadJs = src => scripts[src] || (scripts[src] = new Promise((ok, ng) => { const s = document.createElement('script'); s.src = src; s.async = true; s.onload = ok; s.onerror = ng; document.head.append(s); }));
+
+async function activate(i) {
+  if (i === active) return;
+  const old = document.querySelector(`.slide[data-i="${active}"] .live`); if (old) old.innerHTML = '';
+  active = i;
+  const it = items[i], live = document.querySelector(`.slide[data-i="${i}"] .live`);
+  if (!live) return;
+  try {
+    if (it.t === 'yt') {
+      live.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${esc(it.id)}?autoplay=1&mute=1&playsinline=1&rel=0&loop=1&playlist=${esc(it.id)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`;
+    } else if (it.t === 'xa' || it.t === 'xp') {
+      await loadJs('https://platform.twitter.com/widgets.js');
+      if (active !== i) return;
+      if (it.t === 'xa') await twttr.widgets.createTimeline({sourceType:'profile', screenName:it.h}, live, {theme:'dark', chrome:'noheader nofooter transparent', height:Math.round(live.clientHeight) || 560});
+      else { const id = (it.u.match(/status\/(\d+)/) || [])[1]; if (id) await twttr.widgets.createTweet(id, live, {theme:'dark', align:'center'}); }
+    } else {
+      live.innerHTML = `<blockquote class="instagram-media" data-instgrm-permalink="${esc(it.u)}" data-instgrm-version="14" style="width:100%;margin:0"></blockquote>`;
+      await loadJs('https://www.instagram.com/embed.js');
+      window.instgrm && instgrm.Embeds.process(live);
+    }
+  } catch (e) { live.innerHTML = '<p class="msg">読み込めませんでした</p>'; }
+}
+
+/* ---------- 操作バー ---------- */
+function bar() {
+  const b = (label, on, fn, id) => `<button class="chip" aria-pressed="${on}" data-f="${fn}">${label}</button>`;
+  $('#bar').innerHTML =
+    ['all:すべて','yt:YouTube','x:X','ig:Instagram'].map(s => { const [k, l] = s.split(':'); return b(l, st.src === k, 'src-' + k); }).join('') +
+    b('ショートのみ', st.shorts, 'shorts') + b(st.order === 'mix' ? 'シャッフル' : '新しい順', false, 'order') +
+    b('更新', false, 'reload') + b('＋追加', false, 'add');
+}
+$('#bar').addEventListener('click', e => {
+  const f = e.target.dataset.f; if (!f) return;
+  if (f.startsWith('src-')) st.src = f.slice(4);
+  else if (f === 'shorts') st.shorts = !st.shorts;
+  else if (f === 'order') st.order = st.order === 'mix' ? 'new' : 'mix';
+  else if (f === 'add') { $('#dlg').showModal(); return; }
+  wr('st', st); bar(); load();
+});
+$('#addForm').addEventListener('submit', e => {
+  if (e.submitter?.value !== 'ok') return;
+  const type = $('#addType').value; let v = $('#addVal').value.trim(); const k = $('#keyVal').value.trim();
+  if (k) { key = k; wr('key', k); }
+  if (v) {
+    if (type === 'yt' && !v.startsWith('@')) v = '@' + v;
+    if (type === 'xa') v = v.replace(/^@/, '');
+    extra[type].push(v); wr('extra', extra);
+  }
+  $('#addVal').value = ''; $('#keyVal').value = ''; load();
+});
+
+bar(); load();
+</script>
+</body>
+</html>
