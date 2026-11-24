@@ -60,6 +60,7 @@ dialog .row{display:flex;gap:8px;margin-top:14px;justify-content:flex-end}
   <form method="dialog" id="addForm">
     <label for="addType">追加するもの</label>
     <select id="addType">
+      <option value="yv">YouTube動画・ライブのURL（リンクを貼る）</option>
       <option value="yt">YouTubeチャンネル（@ハンドル）</option>
       <option value="xp">Xの投稿URL</option>
       <option value="ig">Instagramの投稿URL</option>
@@ -97,7 +98,7 @@ const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>'
 const rd = k => { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } };
 const wr = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
 
-let extra = Object.assign({yt:[],xa:[],xp:[],ig:[]}, rd('extra') || {});
+let extra = Object.assign({yv:[],yt:[],xa:[],xp:[],ig:[]}, rd('extra') || {});
 let key = CONFIG.API_KEY || rd('key') || '';
 const st = Object.assign({src:'all', shorts:false, order:'mix'}, rd('st') || {}, {only:'', q:'', onlyLabel:''});
 let items = [], active = -1;
@@ -136,25 +137,38 @@ async function ytSearch(q) {
   return (j.items || []).map(i => ({t:'yt', id:i.id.videoId, title:dec(i.snippet.title), h:i.snippet.channelId, ch:dec(i.snippet.channelTitle), date:i.snippet.publishedAt}));
 }
 
+const ytId = s => { const m = s.match(/(?:[?&]v=|youtu\.be\/|\/live\/|\/shorts\/|\/embed\/)([\w-]{11})/); return m ? m[1] : (/^[\w-]{11}$/.test(s) ? s : ''); };
+
 /* ---------- 読み込みと並び替え ---------- */
 const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.random() * (i + 1) | 0; [a[i], a[j]] = [a[j], a[i]]; } return a; };
 
 async function load() {
   const feed = $('#feed'); feed.innerHTML = '<p class="msg">読み込み中…</p>';
   const q = st.q, all = st.src === 'all', one = q ? '' : st.only, errs = []; items = [];
+  let pins = [];
+  if (!one && !q && (all || st.src === 'yt') && extra.yv.length) {
+    pins = extra.yv.slice(-50).reverse().map(id => ({t:'yt', id, title:'YouTube', h:'', ch:'', date:''}));
+    if (key) { try {
+      const j = await api('videos', {part:'snippet', id:pins.map(x => x.id).join(',')});
+      (j.items || []).forEach(v => { const p = pins.find(x => x.id === v.id); if (!p) return;
+        const lb = v.snippet.liveBroadcastContent;
+        p.title = (lb === 'live' ? '🔴ライブ中 ' : lb === 'upcoming' ? '⏰配信予定 ' : '') + v.snippet.title;
+        p.h = v.snippet.channelId; p.ch = v.snippet.channelTitle; });
+    } catch (e) {} }
+  }
   if (q || (one ? one.startsWith('yt:') : (all || st.src === 'yt'))) {
-    if (!key) {
+    if (!key && !pins.length) {
       feed.innerHTML = '<div class="msg"><p>YouTubeのAPIキーを貼り付けて、保存を押してください</p><br><input id="k1" autocomplete="off" placeholder="AIza..." style="width:100%;padding:10px;border-radius:8px;border:1px solid #ffffff55;background:#1d1829;color:inherit;font:inherit"><br><br><button class="chip" id="k2" aria-pressed="true">保存</button></div>';
       $('#k2').onclick = () => { const v = $('#k1').value.trim(); if (v) { key = v; wr('key', v); load(); } };
       return;
     }
     if (q) { try { items = await ytSearch(q); } catch (e) { errs.push('検索：' + e.message); } }
-    else {
+    else if (key) {
       const hs = one ? [one.slice(3)] : [...new Set([...CONFIG.YT, ...extra.yt])];
       const rs = await Promise.allSettled(hs.map(h => ytItems(h, one ? 50 : CONFIG.PER_CHANNEL)));
       rs.forEach((r, i) => r.status === 'fulfilled' ? items.push(...r.value) : errs.push(hs[i] + '：' + r.reason.message));
     }
-    const seen = new Set(); items = items.filter(x => !seen.has(x.id) && seen.add(x.id));
+    const seen = new Set(pins.map(x => x.id)); items = items.filter(x => !seen.has(x.id) && seen.add(x.id));
   }
   if (one && one.startsWith('x:')) items.push({t:'xa', h:one.slice(2)});
   else if (!one && !q && (all || st.src === 'x')) {
@@ -164,6 +178,7 @@ async function load() {
   if (!one && !q && (all || st.src === 'ig')) [...CONFIG.IG_POSTS, ...extra.ig].forEach(u => items.push({t:'ig', u}));
   if (one || st.order === 'new') items.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
   else shuffle(items);
+  items = [...pins, ...items];
   render();
   if (errs.length) toast('取得できなかった項目：' + errs.length + '件\n' + errs.slice(0, 3).join('\n'));
 }
@@ -176,7 +191,7 @@ function render() {
   if (!items.length) { feed.innerHTML = '<p class="msg">表示できるものがありません。\n「＋追加」から追加するか、APIキーを確認してください。</p>'; return; }
   feed.innerHTML = items.map((it, i) => {
     let m, c;
-    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b><span data-only="yt:${esc(it.h)}" data-label="${esc(it.ch)}">${esc(it.ch)}（タップでこのチャンネルだけ）</span><button class="chip" data-cm="${esc(it.id)}" style="align-self:flex-start;margin-top:6px">コメントを見る</button>`; }
+    if (it.t === 'yt') { m = `<div class="media" style="background-image:url(https://i.ytimg.com/vi/${esc(it.id)}/hqdefault.jpg)"><div class="live"></div></div>`; c = `<b>${esc(it.title)}</b>${it.h ? `<span data-only="yt:${esc(it.h)}" data-label="${esc(it.ch)}">${esc(it.ch)}（タップでこのチャンネルだけ）</span>` : '<span>貼り付けたリンク</span>'}<button class="chip" data-cm="${esc(it.id)}" style="align-self:flex-start;margin-top:6px">コメントを見る</button>`; }
     else if (it.t === 'xa') { m = `<div class="media x"><div class="live"></div>@${esc(it.h)} のタイムラインを読み込み中</div>`; c = `<b>@${esc(it.h)}</b><span data-only="x:${esc(it.h)}" data-label="@${esc(it.h)}">X（タップでこのアカウントだけ）</span>`; }
     else if (it.t === 'xp') { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Xの投稿</b><span>X</span>`; }
     else { m = `<div class="media x"><div class="live"></div>投稿を読み込み中</div>`; c = `<b>Instagramの投稿</b><span>Instagram</span>`; }
@@ -242,6 +257,7 @@ $('#addForm').addEventListener('submit', e => {
   const type = $('#addType').value; let v = $('#addVal').value.trim(); const k = $('#keyVal').value.trim();
   if (k) { key = k; wr('key', k); }
   if (v) {
+    if (type === 'yv') { const ids = v.split(/\s+/).map(ytId).filter(Boolean); ids.forEach(x => { extra.yv = extra.yv.filter(y => y !== x); extra.yv.push(x); }); st.src = 'all'; st.only = ''; st.q = ''; wr('st', st); wr('extra', extra); $('#addVal').value = ''; $('#keyVal').value = ''; bar(); load(); return; }
     let vs = (type === 'xp' || type === 'ig') ? v.split(/\s+/).filter(x => /^https?:\/\//.test(x)).map(x => x.split('?')[0]) : [v];
     if (type === 'xp') vs = vs.filter(x => /status\/\d+/.test(x));
     if (type === 'yt') vs = vs.map(x => x.startsWith('@') ? x : '@' + x);
